@@ -5,14 +5,12 @@ Use these rules for any game built in this repository.
 ## SDK Integration
 - Install the SDK in HTML5 projects with `bun add @oasiz/sdk`.
 - Import once in game logic files: `import { oasiz } from "@oasiz/sdk";`
-- For Unity WebGL or no-build HTML, use `<script src="https://www.oasiz.gg/sdk/v1/oasiz.min.js"></script>` and call `window.oasiz` from your bridge layer.
+- For Unity WebGL, import the Oasiz Unity SDK (`.unitypackage` — see `README.md`) and use `OasizSDK`; for no-build HTML or a custom bridge, use `<script src="https://www.oasiz.gg/sdk/v1/oasiz.min.js"></script>` and call `window.oasiz`.
 - Use `oasiz.*` methods instead of custom platform bridge code.
 
 ## Required Platform Features
-- Call `oasiz.emitScoreConfig()` once during initialization with four anchors.
 - Call `oasiz.submitScore(score)` at the correct scoring moment for the game type.
-- Call `oasiz.gameplayStart()` and `oasiz.gameplayStop()` on play, pause, resume, and game-over transitions.
-- Wire `oasiz.onPause()` and `oasiz.onResume()` so game loops stop when backgrounded and resume safely.
+- Wire `oasiz.onPause()` and `oasiz.onResume()` so game loops stop when backgrounded and resume safely (the SDK does not expose separate gameplay start/stop calls).
 - Use `oasiz.loadGameState()` and `oasiz.saveGameState()` for cross-session game progress.
 - For multiplayer games, use Playroom Kit and call `oasiz.shareRoomCode()` when the room is active.
 

@@ -8,7 +8,7 @@ export interface StoredCredentials {
 }
 
 const DEFAULT_API_BASE = "https://www.oasiz.gg";
-const DEFAULT_WEB_BASE = "https://www.oasiz.gg";
+const DEFAULT_WEB_BASE = "https://www.oasiz.ai/landing";
 
 function normalizeApiBase(raw: string): string {
   let value = raw.trim();
@@ -44,18 +44,24 @@ export function getWebBaseUrl(): string {
     return explicit.replace(/\/+$/, "");
   }
 
-  const explicitApi = process.env.OASIZ_API_URL;
-  if (explicitApi && explicitApi.trim()) {
-    const apiBase = normalizeApiBase(explicitApi);
-    if (apiBase.startsWith("https://api.")) {
-      return apiBase.replace("https://api.", "https://");
-    }
-    if (apiBase.startsWith("http://api.")) {
-      return apiBase.replace("http://api.", "http://");
-    }
-    return apiBase;
+  const apiBase = getApiBaseUrl();
+
+  if (apiBase === DEFAULT_API_BASE) {
+    return DEFAULT_WEB_BASE;
   }
-  return DEFAULT_WEB_BASE;
+
+  if (apiBase.startsWith("https://api.")) {
+    return apiBase.replace("https://api.", "https://");
+  }
+  if (apiBase.startsWith("http://api.")) {
+    return apiBase.replace("http://api.", "http://");
+  }
+
+  if (apiBase.includes("localhost") || apiBase.includes("127.0.0.1")) {
+    return "http://localhost:5173";
+  }
+
+  return apiBase;
 }
 
 export function getCredentialsPath(): string {
@@ -141,9 +147,7 @@ export async function resolveAuthToken(): Promise<string | null> {
 export async function requireAuthToken(): Promise<string> {
   const token = await resolveAuthToken();
   if (!token) {
-    throw new Error(
-      "No API token found. Set OASIZ_CLI_TOKEN or OASIZ_UPLOAD_TOKEN, or run `oasiz login --token <token>`.",
-    );
+    throw new Error("Not logged in. Run `oasiz login` after creating an Oasiz account in the app.");
   }
   return token;
 }

@@ -105,6 +105,11 @@ function enrichConnectionError(error: unknown, message: string): string {
   return lines.join("\n");
 }
 
+function isNotFoundApiError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("Request failed (404): NOT_FOUND");
+}
+
 function parseArgs(argv: string[]): {
   positionals: string[];
   flagSet: Set<string>;
@@ -655,24 +660,31 @@ async function commandUpload(gameSlug: string, argv: string[]): Promise<void> {
   let preflightGameFound = false;
   let preflightDrafts: StudioDraft[] = [];
   if (!dryRun && token) {
-    const preflight = await getUploadPreflight(gameTitle, token);
-    preflightGameFound = Boolean(preflight.game);
-    preflightDrafts = preflight.drafts || [];
-    const liveDraft = getLiveDraft(preflightDrafts);
+    try {
+      const preflight = await getUploadPreflight(gameTitle, token);
+      preflightGameFound = Boolean(preflight.game);
+      preflightDrafts = preflight.drafts || [];
+      const liveDraft = getLiveDraft(preflightDrafts);
 
-    if (preflightGameFound) {
-      console.log("");
-      console.log('"' + gameTitle + '" is on the platform - ' + (liveDraft?.label || "an older version") + " is currently live.");
-      console.log("");
-      if (!forceDraft && !forceActivate) {
-        const shouldContinue = await askYesNo("Upload as a new draft? [Y/n] ", true);
-        if (!shouldContinue) {
-          console.log("Upload cancelled.");
-          return;
+      if (preflightGameFound) {
+        console.log("");
+        console.log('"' + gameTitle + '" is on the platform - ' + (liveDraft?.label || "an older version") + " is currently live.");
+        console.log("");
+        if (!forceDraft && !forceActivate) {
+          const shouldContinue = await askYesNo("Upload as a new draft? [Y/n] ", true);
+          if (!shouldContinue) {
+            console.log("Upload cancelled.");
+            return;
+          }
         }
+      } else {
+        console.log("No existing canonical game found for " + gameTitle + ". This will create one.");
       }
-    } else {
-      console.log("No existing canonical game found for " + gameTitle + ". This will create one.");
+    } catch (error) {
+      if (!isNotFoundApiError(error)) {
+        throw error;
+      }
+      console.log("Upload preflight is not available on this backend. Continuing without version lookup.");
     }
   }
 
@@ -861,7 +873,7 @@ async function findOpenPort(): Promise<number> {
       reject(error);
     });
 
-    server.listen(0, "localhost", () => {
+    server.listen(0, "127.0.0.1", () => {
       const address = server.address();
       if (!address || typeof address === "string") {
         server.close(() => reject(new Error("Failed to allocate callback port.")));
@@ -884,6 +896,9 @@ async function runBrowserLoginFlow(openBrowser: boolean): Promise<BrowserLoginRe
   const state = crypto.randomUUID();
   const webBase = getWebBaseUrl();
   const callbackPort = await findOpenPort();
+  // #region agent log
+  fetch('http://127.0.0.1:7817/ingest/7ebd9d1e-1171-426e-a5d4-767ed7195466',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'215c3f'},body:JSON.stringify({sessionId:'215c3f',runId:'pre-fix',hypothesisId:'H4',location:'scripts/cli.ts:885',message:'login flow started',data:{webBase,callbackPort,openBrowser},timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
   let settled = false;
   let resolveLogin!: (value: BrowserLoginResult) => void;
   let rejectLogin!: (error: Error) => void;
@@ -892,102 +907,201 @@ async function runBrowserLoginFlow(openBrowser: boolean): Promise<BrowserLoginRe
     rejectLogin = reject;
   });
 
+  function renderLocalBridgePage(pathname: string): Response {
+    const html = [
+      "<!doctype html>",
+      "<html>",
+      "<head>",
+      "<meta charset=\"utf-8\" />",
+      "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />",
+      "<title>Oasiz CLI Login Redirect</title>",
+      "<style>",
+      "html,body{height:100%;margin:0}",
+      "body{font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;background:#0b1220;color:#eef4ff;display:grid;place-items:center;padding:24px;box-sizing:border-box}",
+      ".card{width:min(560px,100%);border:1px solid rgba(255,255,255,.14);border-radius:20px;padding:24px;background:rgba(255,255,255,.04)}",
+      "h1{margin:0 0 12px;font-size:24px}",
+      "p{margin:10px 0;color:#c9d7f2;line-height:1.5}",
+      "code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}",
+      "</style>",
+      "</head>",
+      "<body>",
+      "<section class=\"card\">",
+      "<h1>Finishing Oasiz CLI login...</h1>",
+      "<p>If the browser arrived here with auth details in the query string or URL hash, this page will forward them to the local CLI callback automatically.</p>",
+      "<p>If nothing happens, return to the terminal and check the latest <code>[oasiz]</code> request log line.</p>",
+      "<p>Current path: <code>" + pathname + "</code></p>",
+      "<script>",
+      "const fromHash = new URLSearchParams(window.location.hash.startsWith('#') ? window.location.hash.slice(1) : '');",
+      "const fromSearch = new URLSearchParams(window.location.search);",
+      "const params = new URLSearchParams();",
+      "for (const [key, value] of fromHash.entries()) params.set(key, value);",
+      "for (const [key, value] of fromSearch.entries()) if (!params.has(key)) params.set(key, value);",
+      "if (params.has('token') || params.has('state') || params.has('error')) {",
+      "  window.location.replace('/callback?' + params.toString());",
+      "} else {",
+      "  document.body.insertAdjacentHTML('beforeend', '<p style=\"color:#8fa8d6\">No auth payload found on this page.</p>');",
+      "}",
+      "</script>",
+      "</section>",
+      "</body>",
+      "</html>",
+    ].join("");
+
+    return new Response(html, {
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+    });
+  }
+
+  function handleCallbackPayload(url: URL): Response | null {
+    const returnedState = url.searchParams.get("state") || "";
+    const token = url.searchParams.get("token") || "";
+    const email = url.searchParams.get("email") || undefined;
+    const expiresAt = url.searchParams.get("expiresAt") || undefined;
+    const error = url.searchParams.get("error");
+    const hasPayload = Boolean(token || returnedState || error || email || expiresAt);
+
+    if (!hasPayload) {
+      return null;
+    }
+
+    // #region agent log
+    fetch('http://127.0.0.1:7817/ingest/7ebd9d1e-1171-426e-a5d4-767ed7195466',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'215c3f'},body:JSON.stringify({sessionId:'215c3f',runId:'pre-fix',hypothesisId:'H3',location:'scripts/cli.ts:947',message:'callback payload observed',data:{pathname:url.pathname,hasToken:Boolean(token),hasState:Boolean(returnedState),stateMatches:returnedState===state,hasError:Boolean(error),emailPresent:Boolean(email),expiresAtPresent:Boolean(expiresAt)},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+
+    console.log(
+      "[oasiz] callback payload on " +
+        url.pathname +
+        " token=" +
+        (token ? "yes" : "no") +
+        " state=" +
+        (returnedState ? "yes" : "no") +
+        " error=" +
+        (error || "none"),
+    );
+
+    if (settled) {
+      return new Response("Already handled. You can close this tab.", {
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+      });
+    }
+
+    if (error) {
+      settled = true;
+      rejectLogin(new Error("CLI auth failed: " + error));
+      return new Response("Login failed. You can close this tab.", {
+        status: 400,
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+      });
+    }
+
+    if (!token || returnedState !== state) {
+      settled = true;
+      // #region agent log
+      fetch('http://127.0.0.1:7817/ingest/7ebd9d1e-1171-426e-a5d4-767ed7195466',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'215c3f'},body:JSON.stringify({sessionId:'215c3f',runId:'pre-fix',hypothesisId:'H3',location:'scripts/cli.ts:979',message:'callback rejected',data:{pathname:url.pathname,hasToken:Boolean(token),hasState:Boolean(returnedState),stateMatches:returnedState===state},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      rejectLogin(new Error("Invalid callback from Oasiz auth flow."));
+      return new Response("Invalid callback payload. You can close this tab.", {
+        status: 400,
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+      });
+    }
+
+    settled = true;
+    const loginResult: BrowserLoginResult = { token, email, expiresAt };
+    // #region agent log
+    fetch('http://127.0.0.1:7817/ingest/7ebd9d1e-1171-426e-a5d4-767ed7195466',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'215c3f'},body:JSON.stringify({sessionId:'215c3f',runId:'pre-fix',hypothesisId:'H3',location:'scripts/cli.ts:989',message:'callback accepted',data:{pathname:url.pathname,emailPresent:Boolean(email),expiresAtPresent:Boolean(expiresAt)},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    // Give the browser time to fully render a success page before server shutdown.
+    setTimeout(() => {
+      resolveLogin(loginResult);
+    }, 300);
+
+    const html = [
+      "<!doctype html>",
+      "<html>",
+      "<head>",
+      "<meta charset=\"utf-8\" />",
+      "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />",
+      "<title>Oasiz CLI Login Complete</title>",
+      "<link rel=\"preconnect\" href=\"https://fonts.googleapis.com\">",
+      "<link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin>",
+      "<link href=\"https://fonts.googleapis.com/css2?family=Kodchasan:wght@600&family=Montserrat:wght@400;600;700&display=swap\" rel=\"stylesheet\">",
+      "<style>",
+      ":root{--bg:#090f1f;--text:#f5f7ff;--muted:#b8c2de;--line:rgba(255,255,255,.16)}",
+      "html,body{height:100%;margin:0}",
+      "body{font-family:Montserrat,Segoe UI,Arial,sans-serif;background:#090f1f;color:var(--text);display:grid;place-items:center;overflow:hidden}",
+      ".card{position:relative;width:min(560px,calc(100vw - 32px));padding:26px;border-radius:24px;border:1px solid var(--line);background:linear-gradient(180deg,rgba(255,255,255,.12),rgba(255,255,255,.03));backdrop-filter:blur(10px);box-shadow:0 26px 70px rgba(0,0,0,.45)}",
+      ".card::after{content:\"\";position:absolute;inset:0;border-radius:24px;pointer-events:none;background:linear-gradient(120deg,rgba(255,255,255,.08),rgba(255,255,255,0) 35%)}",
+      ".brand{font-family:Kodchasan,Montserrat,Segoe UI,Arial,sans-serif;font-size:12px;letter-spacing:.24em;text-transform:uppercase;color:#dce5ff;opacity:.92;margin-bottom:14px}",
+      ".title{margin:0;font-size:28px;line-height:1.15;letter-spacing:-.01em}",
+      ".desc{margin:10px 0 0;color:var(--muted);font-size:16px;line-height:1.45}",
+      ".status{display:inline-flex;align-items:center;gap:10px;margin-top:16px;padding:8px 12px;border:1px solid rgba(140,209,255,.45);border-radius:999px;background:rgba(73,165,255,.14);font-size:13px;font-weight:600;color:#d7efff}",
+      ".dot{width:8px;height:8px;border-radius:50%;background:#8ef0c6;box-shadow:0 0 0 4px rgba(142,240,198,.16)}",
+      ".foot{margin-top:16px;color:#98a6cc;font-size:13px}",
+      "@media (max-width:480px){.title{font-size:23px}.desc{font-size:15px}}",
+      "</style>",
+      "</head>",
+      "<body>",
+      "<section class=\"card\">",
+      "<div class=\"brand\">OASIZ</div>",
+      "<h1 class=\"title\">CLI LOGIN COMPLETE</h1>",
+      "<p class=\"desc\">Authentication finished successfully. You can close this tab and continue in your terminal.</p>",
+      "<div class=\"status\"><span class=\"dot\"></span>Connected</div>",
+      "<p class=\"foot\">This window can now be closed.</p>",
+      "</section>",
+      "</body>",
+      "</html>",
+    ].join("");
+
+    return new Response(html, {
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+    });
+  }
+
   const server = Bun.serve({
     port: callbackPort,
-    hostname: "localhost",
+    // "::" is dual-stack on most OSes: redirects to 127.0.0.1 *and* localhost (::1) both work.
+    hostname: "::",
     fetch(req: Request) {
       const url = new URL(req.url);
+      // #region agent log
+      fetch('http://127.0.0.1:7817/ingest/7ebd9d1e-1171-426e-a5d4-767ed7195466',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'215c3f'},body:JSON.stringify({sessionId:'215c3f',runId:'pre-fix',hypothesisId:'H1',location:'scripts/cli.ts:1040',message:'local callback request received',data:{method:req.method,pathname:url.pathname,searchKeys:Array.from(url.searchParams.keys())},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      console.log(
+        "[oasiz] request " +
+          req.method +
+          " " +
+          url.pathname +
+          (url.search ? " " + url.search : "") +
+          (url.hash ? " " + url.hash : ""),
+      );
       if (url.pathname === "/favicon.ico") {
         return new Response(null, { status: 204 });
       }
-      if (url.pathname !== "/callback") {
-        return new Response("Not found", { status: 404 });
+      const handled = handleCallbackPayload(url);
+      if (handled) {
+        return handled;
       }
 
-      const returnedState = url.searchParams.get("state") || "";
-      const token = url.searchParams.get("token") || "";
-      const email = url.searchParams.get("email") || undefined;
-      const expiresAt = url.searchParams.get("expiresAt") || undefined;
-      const error = url.searchParams.get("error");
-
-      if (settled) {
-        return new Response("Already handled. You can close this tab.", {
-          headers: { "Content-Type": "text/plain; charset=utf-8" },
-        });
+      if (url.pathname !== "/" && url.pathname !== "/callback") {
+        console.log("[oasiz] unexpected request path; serving local bridge page for " + url.pathname);
       }
 
-      if (error) {
-        settled = true;
-        rejectLogin(new Error("CLI auth failed: " + error));
-        return new Response("Login failed. You can close this tab.", {
-          status: 400,
-          headers: { "Content-Type": "text/plain; charset=utf-8" },
-        });
-      }
-
-      if (!token || returnedState !== state) {
-        settled = true;
-        rejectLogin(new Error("Invalid callback from Oasiz auth flow."));
-        return new Response("Invalid callback payload. You can close this tab.", {
-          status: 400,
-          headers: { "Content-Type": "text/plain; charset=utf-8" },
-        });
-      }
-
-      settled = true;
-      const loginResult: BrowserLoginResult = { token, email, expiresAt };
-      // Give the browser time to fully render a success page before server shutdown.
-      setTimeout(() => {
-        resolveLogin(loginResult);
-      }, 300);
-
-      const html = [
-        "<!doctype html>",
-        "<html>",
-        "<head>",
-        "<meta charset=\"utf-8\" />",
-        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />",
-        "<title>Oasiz CLI Login Complete</title>",
-        "<link rel=\"preconnect\" href=\"https://fonts.googleapis.com\">",
-        "<link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin>",
-        "<link href=\"https://fonts.googleapis.com/css2?family=Kodchasan:wght@600&family=Montserrat:wght@400;600;700&display=swap\" rel=\"stylesheet\">",
-        "<style>",
-        ":root{--bg:#090f1f;--text:#f5f7ff;--muted:#b8c2de;--line:rgba(255,255,255,.16)}",
-        "html,body{height:100%;margin:0}",
-        "body{font-family:Montserrat,Segoe UI,Arial,sans-serif;background:#090f1f;color:var(--text);display:grid;place-items:center;overflow:hidden}",
-        ".card{position:relative;width:min(560px,calc(100vw - 32px));padding:26px;border-radius:24px;border:1px solid var(--line);background:linear-gradient(180deg,rgba(255,255,255,.12),rgba(255,255,255,.03));backdrop-filter:blur(10px);box-shadow:0 26px 70px rgba(0,0,0,.45)}",
-        ".card::after{content:\"\";position:absolute;inset:0;border-radius:24px;pointer-events:none;background:linear-gradient(120deg,rgba(255,255,255,.08),rgba(255,255,255,0) 35%)}",
-        ".brand{font-family:Kodchasan,Montserrat,Segoe UI,Arial,sans-serif;font-size:12px;letter-spacing:.24em;text-transform:uppercase;color:#dce5ff;opacity:.92;margin-bottom:14px}",
-        ".title{margin:0;font-size:28px;line-height:1.15;letter-spacing:-.01em}",
-        ".desc{margin:10px 0 0;color:var(--muted);font-size:16px;line-height:1.45}",
-        ".status{display:inline-flex;align-items:center;gap:10px;margin-top:16px;padding:8px 12px;border:1px solid rgba(140,209,255,.45);border-radius:999px;background:rgba(73,165,255,.14);font-size:13px;font-weight:600;color:#d7efff}",
-        ".dot{width:8px;height:8px;border-radius:50%;background:#8ef0c6;box-shadow:0 0 0 4px rgba(142,240,198,.16)}",
-        ".foot{margin-top:16px;color:#98a6cc;font-size:13px}",
-        "@media (max-width:480px){.title{font-size:23px}.desc{font-size:15px}}",
-        "</style>",
-        "</head>",
-        "<body>",
-        "<section class=\"card\">",
-        "<div class=\"brand\">OASIZ</div>",
-        "<h1 class=\"title\">CLI LOGIN COMPLETE</h1>",
-        "<p class=\"desc\">Authentication finished successfully. You can close this tab and continue in your terminal.</p>",
-        "<div class=\"status\"><span class=\"dot\"></span>Connected</div>",
-        "<p class=\"foot\">This window can now be closed.</p>",
-        "</section>",
-        "</body>",
-        "</html>",
-      ].join("");
-
-      return new Response(html, {
-        headers: { "Content-Type": "text/html; charset=utf-8" },
-      });
+      return renderLocalBridgePage(url.pathname);
     },
   });
 
   try {
     const loginUrl = webBase + "/cli-auth?port=" + String(callbackPort) + "&state=" + encodeURIComponent(state);
+    const callbackHint = "http://127.0.0.1:" + String(callbackPort) + "/callback";
     console.log("Open this URL to continue login:");
     console.log("  " + loginUrl);
+    console.log("");
+    console.log("Waiting for the site to redirect back to this machine:");
+    console.log("  " + callbackHint + "?token=…&state=…");
+    console.log("Keep this terminal open until you see \"Login successful.\"");
+    console.log("(If the browser never hits that URL — e.g. SSH/remote terminal — login cannot finish here.)");
+    console.log("");
     if (openBrowser) {
       await openInBrowser(loginUrl);
     }
@@ -996,7 +1110,12 @@ async function runBrowserLoginFlow(openBrowser: boolean): Promise<BrowserLoginRe
     const timedResult = await Promise.race([
       callbackPromise,
       new Promise<BrowserLoginResult>((_resolve, reject) => {
-        setTimeout(() => reject(new Error("Timed out waiting for browser login callback.")), timeoutMs);
+        setTimeout(() => {
+          // #region agent log
+          fetch('http://127.0.0.1:7817/ingest/7ebd9d1e-1171-426e-a5d4-767ed7195466',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'215c3f'},body:JSON.stringify({sessionId:'215c3f',runId:'pre-fix',hypothesisId:'H1',location:'scripts/cli.ts:1084',message:'login timed out waiting for callback',data:{webBase,callbackPort},timestamp:Date.now()})}).catch(()=>{});
+          // #endregion
+          reject(new Error("Timed out waiting for browser login callback."));
+        }, timeoutMs);
       }),
     ]);
     await Bun.sleep(900);
@@ -1036,36 +1155,27 @@ async function commandLogin(argv: string[]): Promise<void> {
 
 async function commandLogout(): Promise<void> {
   clearStoredCredentials();
-  console.log("Cleared saved credentials.");
-  if (process.env.OASIZ_CLI_TOKEN || process.env.OASIZ_UPLOAD_TOKEN) {
-    console.log("Environment token is still set in this shell. Unset it to fully log out.");
-  }
+  console.log("Cleared saved login credentials.");
 }
 
 async function commandWhoAmI(): Promise<void> {
   const token = await resolveAuthToken();
   if (!token) {
-    console.log("Not logged in.");
+    console.log("Not logged in. Run `oasiz login`.");
     return;
   }
 
-  if (process.env.OASIZ_CLI_TOKEN) {
-    console.log("Authenticated via OASIZ_CLI_TOKEN environment variable.");
-    console.log("API base: " + getApiBaseUrl());
-    return;
-  }
-
-  if (process.env.OASIZ_UPLOAD_TOKEN) {
-    console.log("Authenticated via OASIZ_UPLOAD_TOKEN environment variable.");
+  if (process.env.OASIZ_CLI_TOKEN || process.env.OASIZ_UPLOAD_TOKEN) {
+    console.log("Authenticated via environment variable.");
     console.log("API base: " + getApiBaseUrl());
     return;
   }
 
   const stored = await readStoredCredentials();
   if (stored?.email) {
-    console.log("Authenticated with saved CLI credentials for " + stored.email + ".");
+    console.log("Logged in (saved credentials) as " + stored.email + ".");
   } else {
-    console.log("Authenticated with saved CLI credentials.");
+    console.log("Logged in (saved credentials).");
   }
   console.log("API base: " + getApiBaseUrl());
 }

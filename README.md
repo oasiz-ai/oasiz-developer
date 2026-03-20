@@ -114,105 +114,293 @@ Use these as references for production-quality structure and platform integratio
 
 ## Oasiz SDK
 
+- **HTML5 / TypeScript:** [**@oasiz/sdk** on npm](https://www.npmjs.com/package/@oasiz/sdk) — install in your game project (`bun add @oasiz/sdk@latest` for the latest registry release). The npm package README is the canonical API reference.
+- **Unity WebGL:** use the **Unity SDK** (`.unitypackage`) below so your WebGL build talks to the host through the bundled bridge. For bare HTML templates without the package, you can still load the **CDN** script.
+
 ### HTML5 / TypeScript games
-Install the SDK inside your game project:
 
 ```bash
 bun add @oasiz/sdk
 ```
 
-Import it in your game code:
-
 ```ts
 import { oasiz } from "@oasiz/sdk";
 ```
 
-Typical usage:
+Typical flow:
 
 ```ts
+// 1. Score normalization — call once on startup (four anchors, strictly increasing raw values)
 oasiz.emitScoreConfig({
   anchors: [
-    { raw: 10, normalized: 100 },
-    { raw: 30, normalized: 300 },
-    { raw: 75, normalized: 600 },
-    { raw: 200, normalized: 950 }
-  ]
+    { raw: 30, normalized: 100 },
+    { raw: 60, normalized: 300 },
+    { raw: 120, normalized: 600 },
+    { raw: 300, normalized: 950 },
+  ],
 });
 
-oasiz.gameplayStart();
-oasiz.submitScore(score);
+// 2. Persisted state (plain JSON object; validate fields after load)
+const state = oasiz.loadGameState();
+oasiz.saveGameState({ level: 1 });
+oasiz.flushGameState(); // optional: force write before unload / game over
+
+// 3. Gameplay feedback and final score
 oasiz.triggerHaptic("medium");
+oasiz.submitScore(score);
+
+// 4. App lifecycle — pause loops and audio when backgrounded
+oasiz.onPause(() => {
+  /* stop rAF, pause audio */
+});
+oasiz.onResume(() => {
+  /* resume when safe */
+});
 ```
 
-Use the SDK for:
-- `submitScore()`
-- `emitScoreConfig()`
-- `triggerHaptic()`
-- `gameplayStart()` / `gameplayStop()`
-- `loadGameState()` / `saveGameState()` / `flushGameState()`
-- `onPause()` / `onResume()`
-- `shareRoomCode()` for multiplayer games
+**Score and haptics**
 
-### Unity WebGL games
-For Unity WebGL or no-build HTML integrations, use the CDN version of the SDK:
+| API | Role |
+| --- | --- |
+| `submitScore(score: number)` | Submit the final score once per session at game over (non-negative integer; floats are floored). |
+| `emitScoreConfig(config)` | Map raw scores to the platform scale. Exactly four anchors; `normalized` must be `100`, `300`, `600`, and `950` in order; `raw` values strictly increasing. |
+| `triggerHaptic(type)` | `"light"` \| `"medium"` \| `"heavy"` \| `"success"` \| `"error"` — respect the player’s haptics setting in your game. |
+
+**Game state**
+
+| API | Role |
+| --- | --- |
+| `loadGameState()` | Returns `Record<string, unknown>` (empty object if none). |
+| `saveGameState(state)` | Debounced save to the platform. |
+| `flushGameState()` | Immediate write (e.g. before close or game over). |
+
+**Lifecycle**
+
+| API | Role |
+| --- | --- |
+| `onPause(cb)` / `onResume(cb)` | Subscribe to host foreground/background; each returns an unsubscribe function. |
+
+**Navigation**
+
+| API | Role |
+| --- | --- |
+| `onBackButton(cb)` | Handle platform back / Escape while subscribed. |
+| `onLeaveGame(cb)` | Host is closing the game — light cleanup (e.g. flush state). |
+| `leaveGame()` | Ask the host to exit the game (e.g. Quit button). |
+
+**Multiplayer**
+
+| API | Role |
+| --- | --- |
+| `shareRoomCode(code, options?)` | Set active room code, or `null` when leaving. Optional `{ inviteOverride: true }` if your UI owns the invite entry point. |
+| `openInviteModal()` | Open the platform invite sheet when a room code is already set. |
+
+**Debugging**
+
+| API | Role |
+| --- | --- |
+| `enableLogOverlay(options?)` | Optional in-iframe log mirror for local QA; returns `{ show, hide, clear, destroy, isVisible }`. |
+
+**Injected read-only values** (check for `undefined` before use)
+
+| Property | Role |
+| --- | --- |
+| `oasiz.gameId` | Platform game id. |
+| `oasiz.roomCode` | Pre-filled room for join flows. |
+| `oasiz.playerName` / `oasiz.playerAvatar` | Player identity for multiplayer UI. |
+
+The same helpers are available as **named exports** (for example `submitScore`, `shareRoomCode`, `getGameId`, `getRoomCode`, `getPlayerName`, `getPlayerAvatar`, …) if you prefer not to use the `oasiz` object. Type-only imports include `GameState`, `HapticType`, `ScoreConfig`, `ScoreAnchor`, `LogOverlayOptions`, and others.
+
+When the host bridge is not present (local dev), calls are safe no-ops and the SDK may log a console notice.
+
+### Unity SDK
+
+If your Unity game needs the Oasiz SDK, install it into the Unity project **before** building WebGL.
+
+**Download the Unity package:** [OasizSDK.unitypackage](https://assets.oasiz.ai/sdk/unity/OasizSDK.unitypackage)
+
+**In Unity:**
+
+1. Open your Unity project under `Unity/YourGame/`.
+2. Go to **Assets → Import Package → Custom Package…**
+3. Select `OasizSDK.unitypackage` and import it into the project.
+
+The SDK should end up inside your Unity project’s `Assets/` folder, for example:
+
+```text
+Unity/
+└── YourGame/
+    ├── Assets/
+    │   └── OasizSDK/
+    │       ├── Runtime/
+    │       │   ├── OasizSDK.cs
+    │       │   ├── OasizTypes.cs
+    │       │   ├── com.oasiz.sdk.Runtime.asmdef
+    │       │   └── Plugins/
+    │       │       └── WebGL/
+    │       │           └── OasizBridge.jslib
+    │       └── ...
+    ├── ProjectSettings/
+    ├── Packages/
+    ├── publish.json
+    └── Build/
+```
+
+Keep **all** Unity game files inside `Unity/YourGame/`. Do not put Unity scenes, scripts, textures, or project settings at the repo root.
+
+#### Unity SDK quick start
+
+Initialize the SDK early in your game’s lifecycle so it can register WebGL bridge listeners and survive scene changes:
+
+```csharp
+using System.Collections.Generic;
+using Oasiz;
+using UnityEngine;
+
+public class GameManager : MonoBehaviour
+{
+    private void Awake()
+    {
+        _ = OasizSDK.Instance;
+
+        var state = OasizSDK.LoadGameState();
+        // Restore progress from `state` as needed
+        OasizSDK.OnPause += HandlePause;
+        OasizSDK.OnResume += HandleResume;
+    }
+
+    private void OnGameOver(int score, int currentLevel)
+    {
+        OasizSDK.SaveGameState(new Dictionary<string, object>
+        {
+            ["level"] = currentLevel,
+        });
+        OasizSDK.FlushGameState();
+        OasizSDK.SubmitScore(score);
+        OasizSDK.TriggerHaptic(HapticType.Error);
+    }
+
+    private void HandlePause()
+    {
+        // Pause gameplay/audio here
+    }
+
+    private void HandleResume()
+    {
+        // Resume gameplay/audio here
+    }
+}
+```
+
+### Unity WebGL (CDN only)
+
+If you are **not** using the Unity package, inject the CDN build in your host or template HTML:
 
 ```html
 <script src="https://www.oasiz.gg/sdk/v1/oasiz.min.js"></script>
 ```
 
-This exposes `window.oasiz`. Your Unity WebGL bridge layer should call into `window.oasiz` for score submission, haptics, lifecycle hooks, and room sharing.
+This exposes `window.oasiz` with the same surface as the npm package: score APIs, haptics, game state, pause/resume, back/leave navigation, room code and invite modal, log overlay, and the read-only `gameId` / `roomCode` / `playerName` / `playerAvatar` properties.
 
-Recommended Unity integration points:
-- call `window.oasiz.submitScore(score)` at game over
-- call `window.oasiz.gameplayStart()` when active play begins
-- call `window.oasiz.gameplayStop()` on pause, menu, or game over
-- call `window.oasiz.triggerHaptic("light" | "medium" | "heavy" | "success" | "error")` for gameplay feedback
-- wire pause and resume behavior so your render loop or time scale behaves correctly when the app backgrounds
+Suggested calls from JavaScript or a minimal bridge:
+
+- `window.oasiz.emitScoreConfig(...)` once during initialization
+- `window.oasiz.submitScore(score)` at game over
+- `window.oasiz.saveGameState` / `flushGameState` as needed
+- `window.oasiz.onPause` / `onResume` so time scale and audio follow the app lifecycle
+- `window.oasiz.shareRoomCode` / `openInviteModal` for multiplayer
+- `window.oasiz.triggerHaptic(...)` when the player has haptics enabled
 
 ## CLI And Upload Pipeline
 
 The Oasiz CLI is included in this repository.
 
-### Authentication
-Browser login:
+### Before you upload
+
+1. **Create an Oasiz account** using whatever email you want.
+2. Copy `env.example` to `.env`.
+3. Set **`OASIZ_EMAIL`** in `.env` to your own Oasiz account email.
+4. Keep **`OASIZ_API_URL`** set to `https://oasiz.gg/api/upload/game`.
+5. Set **`OASIZ_UPLOAD_TOKEN`** to the shared upload token provided by the Oasiz team.
+
+### Environment setup
+
+Copy the template and update your email:
 
 ```bash
-bun run oasiz login
+cp env.example .env
 ```
 
-Verify auth:
+Your `.env` should look like this:
+
+```bash
+OASIZ_EMAIL="you@example.com"
+OASIZ_API_URL="https://oasiz.gg/api/upload/game"
+OASIZ_UPLOAD_TOKEN="your_shared_upload_token"
+```
+
+Use your **own** Oasiz account email for `OASIZ_EMAIL`. The API URL and upload token are shared values.
+
+The CLI reads values from the shell environment. Before running `bun run oasiz ...`, load `.env` into your shell:
+
+```bash
+set -a
+source .env
+set +a
+```
+
+Then you can verify the env is available:
 
 ```bash
 bun run oasiz whoami
 ```
 
-If needed, set your registered account email in the shell:
+### Commands reference
+
+| Command | What it does |
+| --- | --- |
+| `bun run oasiz info` | Prints the same help as `bun run oasiz` with no arguments: all commands and upload flags. |
+| `bun run oasiz create [name]` | Interactive wizard: game name/slug, pick a template from `templates/`, scaffolds a new folder with `publish.json`, `src/main.ts`, and `index.html`. Optional `--template <name>` (or a second positional) selects the template without the menu. |
+| `bun run oasiz list` | Lists local game folders next to the repo (each with ✓ if `publish.json` exists, ○ otherwise). |
+| `bun run oasiz games` | Calls the platform API and lists your games (title, draft count, live label, last updated). Requires auth. |
+| `bun run oasiz upload <game>` | Validates the game folder, runs the project build (unless skipped), bundles `dist/index.html` and assets, optionally attaches `thumbnail/`, uploads to the platform, then walks you through draft vs live (unless flags override). Requires auth unless `--dry-run`. |
+| `bun run oasiz versions <game>` | Resolves the game by local folder / `publish.json` title, fetches drafts from the platform, prints labels with relative upload time and which build is live. Requires auth. |
+| `bun run oasiz activate <game>` | Lists remote drafts for that title and prompts you to choose one to promote to **live** (replaces the current live build). Requires auth. |
+
+`oasiz new` is accepted as a deprecated alias for `oasiz create`.
+
+### `upload` flags and orientation
+
+Append these to `bun run oasiz upload <game>`:
+
+| Flag / argument | What it does |
+| --- | --- |
+| `--dry-run` | Builds (unless `--skip-build`), prints payload summary and size breakdown, **does not** upload or require auth. |
+| `--skip-build` | Uses existing `dist/` without running the game’s build script. |
+| `--draft` | Upload only as a draft; skips the interactive “make live?” prompt afterward. |
+| `--activate` | Upload and set the new build live immediately (no draft-only prompt). |
+| `horizontal` | Forces landscape: sets `verticalOnly` to false for this upload (overrides `publish.json` for this run). |
+| `vertical` | Forces portrait-only: sets `verticalOnly` to true for this upload. |
+
+Examples:
 
 ```bash
-export OASIZ_EMAIL="your-registered-email@example.com"
-```
-
-### Main commands
-```bash
-bun run oasiz info
-bun run oasiz create my-game
-bun run oasiz list
-bun run oasiz upload my-game
 bun run oasiz upload my-game --dry-run
 bun run oasiz upload my-game horizontal
-bun run oasiz versions my-game
-bun run oasiz activate my-game
 ```
 
 ### Environment setup
-Copy `env.example` and set the values in your shell or local env file.
+
+Use the **same email** you used for your Oasiz account. Upload authentication comes from the shared environment token, not from browser login.
 
 ```bash
-export OASIZ_UPLOAD_TOKEN="your_upload_token"
-export OASIZ_EMAIL="your-registered-email@example.com"
-# Optional
-export OASIZ_API_URL="https://www.oasiz.gg/api/upload/game"
+cp env.example .env
+set -a
+source .env
+set +a
 ```
+
+Set `OASIZ_EMAIL` in `.env` to your own email. Keep `OASIZ_API_URL` and `OASIZ_UPLOAD_TOKEN` aligned with the shared team values from `env.example`.
 
 ### Upload flow
 1. Build the game.
@@ -265,12 +453,12 @@ These guidelines are not mandatory, but they are strongly recommended based on o
 ## Submission Checklist
 
 Before uploading, make sure your game:
-- works on both desktop and mobile
+- works on mobile
 - handles resize cleanly
 - has a settings modal with Music, FX, and Haptics toggles
 - submits score at the correct time
 - uses haptics thoughtfully
-- respects top safe areas on desktop and mobile
+- respects top safe areas on mobile
 - avoids heavy first-load downloads
 - is polished enough for storefront-quality presentation
 
