@@ -1,0 +1,20 @@
+{
+  "name": "oasiz-developer",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "oasiz": "scripts/cli.ts"
+  },
+  "scripts": {
+    "oasiz": "bun scripts/cli.ts",
+    "upload": "bun scripts/cli.ts upload"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.9",
+    "puppeteer": "^24.37.2"
+  },
+  "dependencies": {
+    "@oasiz/sdk": "^1.0.1",
+    "sharp": "^0.34.5"
+  }
+}
