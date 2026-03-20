@@ -130,26 +130,16 @@ import { oasiz } from "@oasiz/sdk";
 Typical flow:
 
 ```ts
-// 1. Score normalization — call once on startup (four anchors, strictly increasing raw values)
-oasiz.emitScoreConfig({
-  anchors: [
-    { raw: 30, normalized: 100 },
-    { raw: 60, normalized: 300 },
-    { raw: 120, normalized: 600 },
-    { raw: 300, normalized: 950 },
-  ],
-});
-
-// 2. Persisted state (plain JSON object; validate fields after load)
+// 1. Persisted state (plain JSON object; validate fields after load)
 const state = oasiz.loadGameState();
 oasiz.saveGameState({ level: 1 });
 oasiz.flushGameState(); // optional: force write before unload / game over
 
-// 3. Gameplay feedback and final score
+// 2. Gameplay feedback and final score
 oasiz.triggerHaptic("medium");
 oasiz.submitScore(score);
 
-// 4. App lifecycle — pause loops and audio when backgrounded
+// 3. App lifecycle — pause loops and audio when backgrounded
 oasiz.onPause(() => {
   /* stop rAF, pause audio */
 });
@@ -163,7 +153,6 @@ oasiz.onResume(() => {
 | API | Role |
 | --- | --- |
 | `submitScore(score: number)` | Submit the final score once per session at game over (non-negative integer; floats are floored). |
-| `emitScoreConfig(config)` | Map raw scores to the platform scale. Exactly four anchors; `normalized` must be `100`, `300`, `600`, and `950` in order; `raw` values strictly increasing. |
 | `triggerHaptic(type)` | `"light"` \| `"medium"` \| `"heavy"` \| `"success"` \| `"error"` — respect the player’s haptics setting in your game. |
 
 **Game state**
@@ -304,7 +293,6 @@ This exposes `window.oasiz` with the same surface as the npm package: score APIs
 
 Suggested calls from JavaScript or a minimal bridge:
 
-- `window.oasiz.emitScoreConfig(...)` once during initialization
 - `window.oasiz.submitScore(score)` at game over
 - `window.oasiz.saveGameState` / `flushGameState` as needed
 - `window.oasiz.onPause` / `onResume` so time scale and audio follow the app lifecycle
