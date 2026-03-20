@@ -7,8 +7,8 @@ export interface StoredCredentials {
   createdAt: string;
 }
 
-const DEFAULT_API_BASE = "https://api.oasiz.ai";
-const DEFAULT_WEB_BASE = "http://localhost:5173";
+const DEFAULT_API_BASE = "https://www.oasiz.gg";
+const DEFAULT_WEB_BASE = "https://www.oasiz.gg";
 
 function normalizeApiBase(raw: string): string {
   let value = raw.trim();
@@ -53,6 +53,7 @@ export function getWebBaseUrl(): string {
     if (apiBase.startsWith("http://api.")) {
       return apiBase.replace("http://api.", "http://");
     }
+    return apiBase;
   }
   return DEFAULT_WEB_BASE;
 }

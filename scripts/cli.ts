@@ -97,7 +97,7 @@ function enrichConnectionError(error: unknown, message: string): string {
 
   if (!process.env.OASIZ_API_URL) {
     lines.push("Hint: OASIZ_API_URL is not set.");
-    lines.push("Set it for local backend, e.g. `export OASIZ_API_URL=http://localhost:3001`.");
+    lines.push("Set it for production uploads, e.g. `export OASIZ_API_URL=https://www.oasiz.gg/api/upload/game`.");
   } else {
     lines.push("Hint: verify OASIZ_API_URL points to a reachable backend.");
   }

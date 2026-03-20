@@ -211,7 +211,7 @@ Copy `env.example` and set the values in your shell or local env file.
 export OASIZ_UPLOAD_TOKEN="your_upload_token"
 export OASIZ_EMAIL="your-registered-email@example.com"
 # Optional
-export OASIZ_API_URL="http://localhost:3001/api/upload/game"
+export OASIZ_API_URL="https://www.oasiz.gg/api/upload/game"
 ```
 
 ### Upload flow

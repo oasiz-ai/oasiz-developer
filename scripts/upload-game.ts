@@ -59,7 +59,7 @@ function loadEnvSync(): void {
 loadEnvSync();
 
 // Configuration
-const DEFAULT_API_URL = "https://api.oasiz.ai/api/upload/game";
+const DEFAULT_API_URL = "https://www.oasiz.gg/api/upload/game";
 const API_URL = process.env.OASIZ_API_URL || DEFAULT_API_URL;
 const API_TOKEN = process.env.OASIZ_UPLOAD_TOKEN;
 const CREATOR_EMAIL = process.env.OASIZ_EMAIL;
